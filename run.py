@@ -14,6 +14,11 @@ try:
 except ImportError:
     from urlparse import urlparse
 
+from server import *
+import urllib2
+import threading
+import time
+
 """
 简化的区块链
 
@@ -77,7 +82,7 @@ def bootstrap():
     if not all(k in values for k in required):
         return 'Missing values', 400
     seeds = values['seeds']
-    # print json.dumps(seeds, default=lambda obj: obj.__dict__, indent=4)
+    print json.dumps(seeds, default=lambda obj: obj.__dict__, indent=4)
     seed_nodes = list()
     for seed in seeds:
         seed_nodes.append(Node(seed['ip'], seed['port'], seed['node_id']))
@@ -99,7 +104,6 @@ def curr_node():
     }
     output = json.dumps(output, default=lambda obj: obj.__dict__, indent=4)
     return output, 200
-
 
 
 # @app.route('/chain', methods=['GET'])
@@ -300,22 +304,71 @@ def block_info():
     return jsonify(response), 200
 
 
+@app.route('/hello', methods=['POST'])
+def server_hello():
+    values = request.get_json()
+    required = ['node_id', 'port', 'wallet', 'pubkey_hash']
+    if not all(k in values for k in required):
+        return 'Missing values', 400
+    values = json.loads(values)
+    values["ip"] = request.environ['REMOTE_ADDR']
+    server.node_list.append(values)
+
+    return 'hello', 200
+
+
+def client_hello():
+    output = {
+        'node_id': node_manager.node_id,
+        'port': node_manager.port,
+        'wallet': blockchain.get_wallet_address(),
+        'pubkey_hash': Script.sha160(str(blockchain.wallet.pubkey))
+    }
+    output = json.dumps(output, default=lambda obj: obj.__dict__, indent=4)
+
+    req = urllib2.Request("http://" + controller + "/hello",
+                          output,
+                          {"Content-Type": "application/json"})
+    urllib2.urlopen(req)
+
+
 if __name__ == '__main__':
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
     parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on')
+    parser.add_argument('-g', action='store_true')
     args = parser.parse_args()
     port = args.port
+    isGenesis = args.g
 
-    if port == 5000:
-        genisus_node = True
-    else:
-        genisus_node = False
-
-    node_manager = NodeManager('localhost', 0, genisus_node, True)
+    node_manager = NodeManager('localhost', port, isGenesis, True)
     blockchain = node_manager.blockchain
 
-    print "Wallet address: %s" % blockchain.get_wallet_address()
+    # hardcoded control node address
+    controller = "121.36.95.93:5000"
 
-    app.run(host='0.0.0.0', port=port)
+    print
+    "Wallet address: %s" % blockchain.get_wallet_address()
+
+    thread = threading.Thread(target=app.run, args=('0.0.0.0', port))
+    thread.setDaemon(True)
+    thread.start()
+
+    time.sleep(1)
+
+    if isGenesis:
+        server = ServerCli()
+        serverNode = {
+            'node_id': node_manager.node_id,
+            'ip': node_manager.ip,
+            'port': node_manager.port,
+            'wallet': blockchain.get_wallet_address(),
+            'pubkey_hash': Script.sha160(str(blockchain.wallet.pubkey))
+        }
+        server.node_list.append(serverNode)
+        time.sleep(3)
+        server.start_simulation()
+    else:
+        client_hello()
+        thread.join()
